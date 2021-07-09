@@ -6,4 +6,5 @@ Gexel Forms is an Electron.js based contract and signature management desktop ap
 
 
 <img src="https://user-images.githubusercontent.com/59216720/125127379-707a2200-e0ca-11eb-9515-418f0899f90a.png" width="500">
+The signature API (the online application for signing) uses the desktop application as an intermediate to access the files on the local network to avoid exposing the same network to the exterior environment and risking any major security vulnerabilities that could compromise the files.
 
