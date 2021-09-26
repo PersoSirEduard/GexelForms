@@ -1,4 +1,4 @@
-const { authenticate, addPendingSignature, verifyId, renderHTML, updateSignature, getSignatures, removeSignature } = require("../../helpers/signHelpers");
+const { authenticate, addPendingSignature, verifyId, renderHTML, updateSignature, getSignatures, removeSignature, findSignature } = require("../../helpers/signHelpers");
 
 module.exports = app => {
 
@@ -128,6 +128,28 @@ module.exports = app => {
             message: "Success.",
             signatures: completed
         });
+
+    });
+
+    app.post("/api/find_signature", authenticate, (req, res) => {
+        const { file } = req.body;
+
+        // Verify if file argument exists
+        if (!file || file == undefined) {
+            return res.send({
+                success: false,
+                message: "Error: Enter a valid file name."
+            });
+        }
+
+        // Find signature and return it
+        var id = findSignature(file);
+        return res.send({
+            success: true,
+            message: "Success.",
+            id: id
+        });
+    
 
     });
 

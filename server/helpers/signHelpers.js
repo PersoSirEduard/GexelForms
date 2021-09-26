@@ -74,6 +74,21 @@ function getSignatures(completed=false) {
     return signatures;
 }
 
+function findSignature(file) {
+
+	// Find specific contract from file name
+	for (var contract of db.data.signatures) {
+
+		// Found the file and return id
+        if (contract.file === file) return contract.id;
+
+    }
+
+	// If no contract was found, create a new one and return id
+	return addPendingSignature(file, file).id;
+
+}
+
 // Change image to an assigned signature
 function updateSignature(id, image) {
     
@@ -254,4 +269,4 @@ function renderHTML(name, id) {
     `;
 }
 
-module.exports = { authenticate, addPendingSignature, getSignatures, verifyId, renderHTML, updateSignature, removeSignature};
+module.exports = { authenticate, addPendingSignature, getSignatures, verifyId, renderHTML, updateSignature, removeSignature, findSignature};
