@@ -1,7 +1,7 @@
 # GexelForms
 
 ## Description
-Gexel Forms is an Electron.js based contract and signature management desktop app for work at Gexel Inc. It enables the user to create and store on their network a digitals copies of  contracts. Furthermore, the app includes other features such as email notification for signaling the whole team about an exchange and an online client signing API to for distance safe agreements.
+Gexel Forms is an Electron.js based contract and signature manager for desktop. It was created for Gexel Inc. and it enables the users to create and store digital contracts on their network. Furthermore, the app includes other features such as an email notification system for signaling the whole team about an exchange and an online client signing API for distance safe agreements.
 
 
 <img src="https://user-images.githubusercontent.com/59216720/125126172-b0d8a080-e0c8-11eb-8f24-90e42035706b.png" width="500">
