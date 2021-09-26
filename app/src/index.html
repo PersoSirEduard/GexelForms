@@ -2,7 +2,13 @@
 <html>
     <head>
         <link rel="stylesheet" href="styles/index.css">
+        <script src="js/debugLog.js"></script>
         <script src="js/index.js"></script>
+        <script src="js/contract.js"></script>
+        <script src="js/email.js"></script>
+        <script src="js/pdf.js"></script>
+        <script src="js/signature.js"></script>
+        <script src="js/search.js"></script>
         <title>Gexel Forms</title>
     </head>
     <body>
@@ -30,18 +36,46 @@
             </button>
         </div>
 
+        <!-- Alert box -->
         <div id="alert-box">
             <p id="alert-box-msg">This is an error message</p>
             <img src="assets/close-icon-white.svg" id="alert-box-close" onclick="onClick_AlertBoxClose()"></img>
         </div>
        
+        <!-- Search page -->
         <div id='search' class="tabcontent active">
-            <input type="text" placeholder="Search.." id="searchInput" class="searchbox" onkeyup="onKeyUp_SearchBox()">
+
+            <div id="loader-search" class="overlay-loader">
+                <div id="send-email-box">
+                    <a onclick="onClick_CloseEmailMenu()" style="align-self: flex-end; margin-top: 10px; margin-right: 10px;"><img src="assets/close-icon.svg"></a>
+                    <h3 id="email-menu-title">File</h3>
+                    <input id="send-email-input" type="text" placeholder="Enter an email...">
+                    <textarea id="send-email-textarea" type="text" placeholder="Enter additional notes..."></textarea>
+                    <button id="send-sign-req">Send a signature request</button>
+                    <button id="send-copy">Send a copy of the document</button>
+                </div>
+            </div>
+
+            <div style="display: flex; flex-direction: row; padding-left: 10px; padding-top: 10px;">
+                <input type="text" placeholder="Search.." id="searchInput" class="searchbox" onkeyup="onKeyUp_SearchBox()">
+                <div style="margin-left: 10px; align-self: center;">
+                    Sorted by:
+                    <select id="sort-box" onchange="onChange_SearchSort()">
+                        <option value="relevance">Relevance</option>
+                        <option value="newest">Newest</option>
+                        <option value="alphabet">Alphabetical order</option>
+                    </select>
+                </div>
+                
+            </div>
+            
             <div id="search-list-box" class="search-list-box">
                 <!-- Generated list with files will come here -->
             </div>
         </div>
-        <div id='add' class="tabcontent">
+
+        <!-- Add form page -->
+        <div id='add' class="tabcontent" onclick="closeAutocompleteList()">
             <div class="user-form center">
 
                 <div class="form-header">
@@ -54,6 +88,8 @@
                 </div>
                 
                 <div class="form-body">
+
+                    <!-- Contract info text -->
                     <div id="description-box">
                         <p id="description-rationale-title" class="subtitle">1| Rationale</p>
                         <p id="description-rationale"></p>
@@ -64,65 +100,114 @@
                     <div class="arrangement-div">
 
                     <table class="description-table" id="equipment">
-                        <tr>
-                            <th style="color: white;"> Select Equipment / Équipements</th>
-                            <th style="color: white;">Costs / Coûts</th>
+                        <tr style="padding-right: 30px;">
+                                <th style="color: white;">Select Equipment / Équipements</th>
+                                <th style="color: white;">Costs / Coûts</th>
                         </tr>
                         <tr>
                             <th>
+                                <div class="div-item">
                                 <input type="checkbox" class="equipment-checkbox" id="checkbox-laptop" name="selected-equipment" value="Laptop">
                                 Laptop/Portable
+                                <input type="number" id="laptop-number" class="computer-number" placeholder="Enter #" min="0">
+                                </div>
                             </th>
-                            <th>$1,000</th>
+                            <th><div class="div-item">$1,000</div></th>
                         </tr>
                         <tr>
                             <th>
+                                <div class="div-item">
                                 <input type="checkbox" class="equipment-checkbox" id="checkbox-monitor" name="selected-equipment" value="Monitor">
                                 Monitor/Écran
+                                </div>
                             </th>
-                            <th>$200</th>
+                            <th><div class="div-item">$200</div></th>
                         </tr>
                         <tr>
                             <th>
+                                <div class="div-item">
                                 <input type="checkbox" class="equipment-checkbox" id="checkbox-mouse" name="selected-equipment" value="Mouse">
                                 Mouse/Souris
+                                </div>
                             </th>
-                            <th>$35</th>
+                            <th><div class="div-item">$35</div></th>
                         </tr>
                         <tr>
                             <th>
+                                <div class="div-item">
                                 <input type="checkbox" class="equipment-checkbox" id="checkbox-keyboard" name="selected-equipment" value="Keyboard">
                                 Keyboard/Clavier
+                                </div>
                             </th>
-                            <th>$40</th>
+                            <th><div class="div-item">$40</div></th>
                         </tr>
                         <tr>
                             <th>
+                                <div class="div-item">
                                 <input type="checkbox" class="equipment-checkbox" id="checkbox-pc" name="selected-equipment" value="PC">
                                 PC/Tour
+                                <input type="number" id="pc-number" class="computer-number" placeholder="Enter #" min="0">
+                                </div>
                             </th>
-                            <th>$800</th>
+                            <th><div class="div-item">$800</div></th>
                         </tr>
                         <tr>
                             <th>
+                                <div class="div-item">
                                 <input type="checkbox" class="equipment-checkbox" id="checkbox-wifi" name="selected-equipment" value="Wifi_Key">
                                 Wifi key/Clé Wifi
+                                </div>
                             </th>
-                            <th>$50</th>
+                            <th><div class="div-item">$50</div></th>
                         </tr>
                         <tr>
                             <th>
+                                <div class="div-item">
                                 <input type="checkbox" class="equipment-checkbox" id="checkbox-ethernet" name="selected-equipment" value="Ethernet_Cable">
                                 Ethernet cable/Câble Ethernet
+                                </div>
                             </th>
-                            <th>$50</th>
+                            <th><div class="div-item">$50</div></th>
                         </tr>
                         <tr>
                             <th>
+                                <div class="div-item">
                                 <input type="checkbox" class="equipment-checkbox" id="checkbox-headset" name="selected-equipment" value="Headset">
                                 Headset and USB/Casque et câble USB
+                                </div>
                             </th>
-                            <th>$115</th>
+                            <th><div class="div-item">$115</div></th>
+                        </tr>
+                        <tr>
+                            <th>
+                                <div class="div-item">
+                                <input type="checkbox" class="equipment-checkbox" id="checkbox-webcam" name="selected-equipment" value="Webcam">
+                                Webcam/Caméra
+                                </div>
+                            </th>
+                            <th><div class="div-item">$40</div></th>
+                        </tr>
+                        <tr>
+                            <th>
+                                <input type="checkbox" class="equipment-checkbox" id="checkbox-jetonduo" name="selected-equipment" value="Jeton Duo">
+                                Jeton Duo
+                            </th>
+                            <th>N/A</th>
+                        </tr>
+                        <tr>
+                            <th>
+                                <input type="checkbox" class="equipment-checkbox" id="checkbox-yubikey" name="selected-equipment" value="Yubikey">
+                                Yubikey
+                            </th>
+                            <th>N/A</th>
+                        </tr>
+                        <tr>
+                            <th>
+                                <input type="checkbox" class="equipment-checkbox" id="checkbox-accesscard" name="selected-equipment" value="Access Card">
+                                Access Card
+                                <input type="number" id="card-number" class="computer-number" placeholder="Enter #" min="0">
+                            </th>
+                            <th>$35</th>
                         </tr>
                     </table>
 
@@ -131,6 +216,11 @@
                             <img src='assets/tail-spin.svg'></img>
                         </div>
                         <div class="form-input-box">
+
+                            <p class="title-input">Name:</p>
+                            <div class="autocomplete">
+                                <input onkeydown="onKeyDown_profileAutocomplete()" oninput="onInput_profileAutocomplete()" id="client-name-input" class="form-input" type="text" placeholder="Enter the client's name...">
+                            </div>
                             
                             <p class="title-input">Campaign:</p>
                             <input id="campaign-input" class="form-input" type="text" placeholder="Enter campaign name...">
@@ -139,7 +229,7 @@
                             <select id="equipment-input" class="form-input-dropdown" for="equipment" name="equipment">
                                 <option value="Return">Return</option>
                                 <option value="New">New</option>
-                                <option value="Replacement">Replacement</option>
+                                <option value="Replacement">Replacement (specify in the additional notes box)</option>
                             </select>
 
                             <div class="form-input-box-row">
@@ -148,13 +238,10 @@
                                     <input class="form-input-date" type="date" id="date-input" name="sign-date">
                                 </div>
                                 <div style="margin-right: 21px;">
-                                    <p class="title-input" style="margin-left: 0;">Given by:</p>
+                                    <p class="title-input" style="margin-left: 0;">Handled by:</p>
                                     <input class="form-input" type="text" id="given-input" name="given" placeholder="Your name..." style="width: 300px; margin: 0;">
                                 </div>
                             </div>
-
-                            <p class="title-input">Client's name:</p>
-                            <input id="client-name-input" class="form-input" type="text" placeholder="Enter the client's name...">
                             
                             <p class="title-input">Signature:</p>
                             <select id="signature-type-input" class="form-input-dropdown" for="signature" name="signature" onchange="onChange_SignatureTypeInput()">
@@ -167,14 +254,25 @@
                                 <p class="title-input">Client's email:</p>
                                 <input id="client-input" class="form-input" type="text" placeholder="Enter the client's email...">
                             </div>
-
+                            
                             <canvas id="signature-canvas" class="signature-canvas"></canvas>
+                            <button id="clear-canvas-btn" onclick="signaturePad.clear()">Clear</button>
 
                             <textarea id="additional-info" class="description-box" placeholder="Enter additional notes"></textarea>
                             
                         </div>
 
-                        <button id="submit-btn" class="animatd-btn" onclick="OnClick_Submit()">Submit</button>
+                        <button id="submit-btn" class="animatd-btn" onclick="OnClick_Submit()"><img src="assets/submit-icon.svg">Submit</button>
+
+                        <div id="modify-panel" style="display: flex; flex-direction: column; display: none; margin-top: 15px;">
+                            <p id="modify-title" style="text-align: center; font-size: 15px;">Currently modifying a file...</p>
+                            <div style="display: flex; flex-direction: row;">
+                                <button id="modify-btn" class="animatd-btn green-hover"><img src="assets/modify-icon.svg">Modify</button>
+                                <button id="cancel-modify-btn" class="animatd-btn red-hover" onclick="onClick_ExitModifyMenu()"><img src="assets/close-icon.svg">Cancel</button>
+                            </div>
+                        </div>
+                        
+                        
 
                     </div>
 
@@ -193,9 +291,13 @@
                     <input type="checkbox" id="enable-notification-settings" onclick="onClick_EmailNotificationSettings()">
                     <label style="margin-left: 10px;"> Enable Email Notification</label>
                 </div>
-                <input id="notification-email-settings" class="settings-input" type="text" onkeyup="onKeyUp_NotificationEmailSettings()" placeholder="Enter the notification email...">
-                <input id="network-path-settings" class="settings-input" type="text" onkeyup="onKeyUp_NetworkPathSettings()" placeholder="Enter the network path...">
-                
+                <div class="checkbox-container">
+                    <input type="checkbox" id="enable-autocomplete-settings" onclick="onClick_SearchAutocompleteSettings()">
+                    <label style="margin-left: 10px;"> Enable Search Autocomplete</label>
+                </div>
+                <input id="notification-email-settings" class="settings-input" type="text" onkeyup="onKeyUp_NotificationEmailSettings()" placeholder="Enter the notification email..." title="Notification email">
+                <input id="network-path-settings" class="settings-input" type="text" onclick="onClick_NetworkPathSettings()" placeholder="Click to enter a network path..." title="Network path" readonly>
+                <p style="margin-top: 15px; font-size: small;">Designed and created by Eduard Anton</p>
             </div>
             
         </div>

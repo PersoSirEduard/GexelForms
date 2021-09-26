@@ -1,4 +1,4 @@
-const remote = require('electron').remote;
+const { remote, ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const SignaturePad = require('signature_pad');
@@ -6,32 +6,44 @@ const nodemailer = require("nodemailer");
 const { exec } = require("child_process");
 const { PDFDocument, rgb } = require('pdf-lib');
 
-
 const app = remote.app;
 
 // Will contain SignaturePad class
 var signaturePad = false;
 
+// Avoid opening more than 1 dialog box at a time
+var isDialogOpen = false;
+
+// Keep track of the last automatic update of signatures
+var lastSignatureCheck = 0;
+
 // Init when page is loaded
 window.addEventListener('DOMContentLoaded', () => {
-    var window = remote.getCurrentWindow();
 
     // Set title name
-    document.getElementById('topbar-title').innerText = window.title
+    var appWindow = remote.getCurrentWindow();
+    document.getElementById('topbar-title').innerText = appWindow.title
+    
+    window.addEventListener("resize", resizeSignaturePad); // Resize window event for signature pad
 
     setupSettings(); // Load settings on settings page
     listFiles(); // Init for the search page
     onChange_Language(); // Init for the add form page
     setupSignaturePad(); // Initialize signature pad
-    checkForSignatures(); // Check with signature API
+    
+    // Check signatures when window becomes in focus
+    // An interval timer would not work because it would constantly spam the API server when the app is kept running in the background
+    appWindow.on('focus', () => {
+        var timeDiff = (new Date() - lastSignatureCheck) / 1000; // Time difference in seconds
+        
+        // Check signatures by minimum intervals of 5 minutes
+        if (timeDiff >= 300) {
+            checkForSignatures(); // Check with signature API
+            lastSignatureCheck = new Date();
+        }
+    });
 
 });
-
-window.addEventListener("resize", resizeSignaturePad); // Resize window event for signature pad
-
-// Search for new signatures using the API
-var signatureClock = setInterval(checkForSignatures, 300000); // Auto update each 5 mins
-
 
 /*
     Signature API
@@ -46,8 +58,12 @@ async function checkForSignatures() {
         body: JSON.stringify({
             auth: remote.app.store.get("apiAuth")
         })
-    });
-
+    }).catch((err) => {
+        // Handle and log errors
+        console.log(err);
+        localLog("(Fetching /api/get_completed) " + err);
+    })
+    
     // Check if fetch was successful
     if (signature.ok) {
         var response = await signature.json();
@@ -56,6 +72,7 @@ async function checkForSignatures() {
             for (signature of response.signatures) {
 
                 const filePath = remote.app.store.get("networkPath") + signature.file;
+                console.log(filePath)
                 // Check to see if file still exists
                 if (fs.existsSync(filePath)) {
 
@@ -73,11 +90,16 @@ async function checkForSignatures() {
                         id: signature.id,
                         auth: remote.app.store.get("apiAuth")
                     })
+                }).catch((err) => {
+                    // Handle and log errors
+                    console.log(err);
+                    localLog("(Fetching /api/remove_signature) " + err);
                 });
             }
         }
     }
-    listFiles();
+    // Reload search
+    listFiles(document.getElementById('searchInput').value);
     return;
 }
 
@@ -168,31 +190,36 @@ function onKeyUp_SearchBox() {
     listFiles(searchInput.value);
 }
 
+function onChange_SearchSort() {
+    var searchInput = document.getElementById('searchInput');
+    listFiles(searchInput.value);
+}
+
 function listFiles(searchKeys = "") {
     // Clear current items
     document.getElementById('search-list-box').innerHTML = "";
     
     // Read all files from the directory
     const PATH = remote.app.store.get('networkPath');
-    const MAX_ITEMS = 100;
-    var currentItem = 0;
+    const MAX_ITEMS = 100; // Limit display
 
-    fs.readdir(PATH, (err, files) => {
-        
-        files.forEach(file => {
+    fs.readdir(PATH, async (err, files) => {
 
-            // Filter search
-            for (key of searchKeys.split(" ")) {
-                if (!file.toLowerCase().includes(key.toLowerCase())) {
-                    return;
-                }
-            }
+        // Error handling (invalid directory or no permission)
+        if (err) {
+            showAlert("Could not access the directory.");
+            console.log(err);
+            localLog("(Access to network path) " + err);
+            return;
+        }
 
-            if (currentItem >= MAX_ITEMS) {
-                return;
-            }
+        (await handleSearch(files, PATH, searchKeys))
+        .slice(0, MAX_ITEMS) // Only take a maximum of 100 items
+        .forEach(file => {
 
-            currentItem++;
+            // Clean & adjust type from newest
+            // this just works [date, file] -> only file
+            if (typeof(file) == 'object') file = file[1]
 
             // Create new list box item element
             var fileElem = document.createElement('div');
@@ -202,30 +229,156 @@ function listFiles(searchKeys = "") {
             var isFolder = stats.isDirectory();
             var date = stats.mtime;
 
+            const emailButton = `<span onclick="onClick_OpenEmailMenu('${file}')" class="action-icon" title="Send Email"><img src="assets/email-icon.svg"></img></span>`;
+            const modifyButton = `<span onclick="onClick_ModifyDocument('${file}')" class="action-icon" title="Modify"><img src="assets/modify-icon.svg"></img></span>`
+
             fileElem.innerHTML = `
                 ${isFolder ? "<img src='assets/folder-icon.svg'>" : "<img src='assets/file-icon.svg'>"}
                 </img><p>${file.replace("Pending_", "").replace("Complete_", "")}</p>
                 <span style="color: #5e6052; font-size: small;"></span>
                 <span class="dot ${file.includes("Complete_") ? "complete" : ""}${file.includes("Pending_") ? "pending" : ""}"></span>
+                ${file.includes("Complete_") || file.includes("Pending_") ? emailButton : ""}
+                ${file.includes("Complete_") || file.includes("Pending_") ? modifyButton : ""}
                 <span class="modified-label">         Modified: ${date}</span>`;
 
             // Open file when double click event
             fileElem.ondblclick = () => exec(`"${PATH+file}"`);
-
-            // Add urgent items on top
-            var listBox = document.getElementById('search-list-box');
-            if (file.includes("Pending_")) {
-                // Urgent on top
-                listBox.insertBefore(fileElem, listBox.childNodes[0]);
-            } else {
-                // Completed or unknown at the bottom
-                listBox.appendChild(fileElem);
-            }
             
+            // Make copy of file when dragged on desktop
+            fileElem.setAttribute("draggable", "true");
+            fileElem.ondragstart = (event) => {
+                event.preventDefault()
+                ipcRenderer.send('ondragstart', PATH + file)
+            }
+
+            // Add items to search list
+            var listBox = document.getElementById('search-list-box');
+            listBox.appendChild(fileElem);
         });
+
+        
     });
 
+}
 
+function onClick_OpenEmailMenu(file) {
+
+    // Hide background
+    var loader = document.getElementById('loader-search');
+    loader.style.display = "block";
+
+    // Setup title of menu according to file name
+    var cleanFile = file.replace("Pending_", "").replace("Complete_", "");
+    document.getElementById('email-menu-title').innerHTML = cleanFile.substr(0, 20) + (cleanFile.length > 20 ? "..." : "");
+
+    // Send new signature request email
+    document.getElementById('send-sign-req').onclick = async () => {
+
+        // Verify if email if ok
+        if (!document.getElementById('send-email-input').value.includes("@")) {
+            showAlert("Please enter a valid email.");
+            return;
+        }
+
+        // Disable buttons
+        onClick_AlertBoxClose();
+        document.getElementById('send-sign-req').disabled = true;
+        document.getElementById('send-copy').disabled = true;
+
+        // Request for signature ID
+        var fetchedRawId = await fetch(remote.app.store.get("apiUrl") + "/api/find_signature", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file: file, auth: remote.app.store.get("apiAuth") })
+        }).catch((err) => {
+            // Handle and log errors
+            console.log(err);
+            localLog("(Fetching /api/find_signature) " + err);
+            showAlert(err);
+            
+            // Enable buttons
+            document.getElementById('send-sign-req').disabled = false;
+            document.getElementById('send-copy').disabled = false;
+            onClick_CloseEmailMenu();
+            return;
+        })
+        
+        if (fetchedRawId.ok) {
+            // Send new email
+            var fetchedId = await fetchedRawId.json();
+            var contract = getContract("english");
+            var emailMsg = await sendEmail(document.getElementById('send-email-input').value, {
+                subject: `Equipment contract requiring a signature`,
+                attachments: [{ filename: file, path: remote.app.store.get('networkPath') + file }],
+                html: `
+                    <h2>1. Rationale</h2>
+                    ${contract[0]}
+                    <h2>2. Significance</h2>
+                    ${contract[1]}
+                    <p><a style="font-size: 20px;" href="${remote.app.store.get("apiUrl")}/sign/${fetchedId.id}/">Click here to sign the contract.</a></p>
+                    <p style="color: grey;">In case of a problem, please contact IT support.</p>
+                    <p style="color: grey;">Do not reply to this email.</p>
+                `
+            }).catch(ex => {
+                // Handle and log errors
+                showAlert("The email could not be sent. " + ex);
+                console.log(ex);
+                localLog(ex);
+            });
+        } else {
+            console.log("Fetching /api/find_signature error");
+            localLog("(Fetching /api/find_signature) Error");
+            showAlert("Error could not reach the server.");
+        }
+
+        // Enable buttons
+        document.getElementById('send-sign-req').disabled = false;
+        document.getElementById('send-copy').disabled = false;
+        onClick_CloseEmailMenu();
+
+    }
+
+    // Send copy of contract
+    document.getElementById('send-copy').onclick = async () => {
+
+        // Verify is email is valid
+        if (!document.getElementById('send-email-input').value.includes("@")) {
+            showAlert("Please enter a valid email.");
+            return;
+        }
+
+        // Disable buttons
+        onClick_AlertBoxClose();
+        document.getElementById('send-sign-req').disabled = true;
+        document.getElementById('send-copy').disabled = true;
+
+        // Prepare and send email
+        try {
+            var emailMsg = await sendEmail(document.getElementById('send-email-input').value, {
+                subject: `Equipment contract`,
+                html: document.getElementById('send-email-textarea').value,
+                attachments: [{ filename: file, path: remote.app.store.get('networkPath') + file }]
+            })
+        } catch (ex) {
+            showAlert("The email could not be sent. " + ex);
+            console.log(ex);
+            localLog(ex);
+        }
+
+        // Enable buttons
+        document.getElementById('send-sign-req').disabled = false;
+        document.getElementById('send-copy').disabled = false;
+        onClick_CloseEmailMenu();
+        
+    }
+}
+
+function onClick_CloseEmailMenu() {
+    document.getElementById('loader-search').style.display = 'none';
+}
+
+async function onClick_ModifyDocument(file) {
+    await loadPDFCache(file);
 }
 
 /*
@@ -253,48 +406,68 @@ function onChange_Language() {
     }
 }
 
-// Get contract depending on language
-function getContract(language) {
-    if (language == "english") {
-        return [
-        `
-         In order to optimize the management of our equipment, we have developed
-         a new procedure to that effect. This means that everyone will receive a 
-         set of working equipment to be kept for the duration of your employement 
-         at <b>GEXEL TELECOM</b>. This equipment will be loaned to you.
-        `,
-        `
-        You will be responsible for this equipment as the cost of this equipment is a significant investment for the Company. 
-        Therefore, will be held responsible for all damaged or lost equipment. However, you will not be held liable for damages due 
-        to normal wear and tear and damages covered by the warranty of the equipment. I hereby confirm that I have been informed of 
-        the cost of the equipment that will be loaned to me for my usage during my employement at GEXEL and you have validated the status of these. 
-        I also accept the following conditions: In case I lose the equipment, I will be held responsible for the replacement costs; In case of any 
-        damages of derect to the equipment not covered by the warrenty, I will be held responsible for all replacement costs other than normal wear and tear; 
-        In case of the termination of employement, I will be responsible for returning the equipment at the pick up address. Otherwise, the cost of this
-        equipment will be deducted from my last paycheck.
-        `];
-    } else {
-        return [
-        `
-        Chaque employé se verra remettre un emsemble d'outils de travail qu'il conservera durant son emploi chez <b>GEXEL</b>.
-        Ces outils vous seront prêtés personnellement, pour votre seule utilisation.
-        `,
-        `
-        L'achat de ces outils représente un investissement important pour la Compagnie. 
-        Vous ne serez, bien entendu, pas tenu responsable pour les bris dus à l'usure, 
-        les dommages normaux et ceux couverts par la garantie des équipements. Par la présente, 
-        j'atteste avoir pris connaissance des coûts des équipements de travail, valider 
-        l'état des équipements remis et j'accepte les conidtions suivantes: En case de perte 
-        d'équipement, je suis responsable de la totalité des coûts de remplacement; En cas de 
-        bris ou de défectuosité, qui ne résultent pas d'une usure normale et qui ne sont pas 
-        couverts par la garantie, je suis responsable de la totalité des coûts de remplacement; 
-        Dans le cas d'une cessation d'emploi, je suis responsable de remettre l'équipement en 
-        main propre à l'adresse où vous avez pris possession des équipements;
-        `];
+// Display or refresh the autocomplete list for names
+var currentFocus;
+async function onInput_profileAutocomplete() {
+    if (!remote.app.store.get("enableAutocomplete")) return; // Ignore function if the feature is disabled
+
+    var nameInput = document.getElementById('client-name-input')
+
+    closeAutocompleteList();
+
+    if (!nameInput.value) return false;
+
+    currentFocus = -1; // No focus
+
+    // Create a new item,
+    var itemsList = document.createElement("div");
+    itemsList.setAttribute("class", "autocomplete-items");
+    itemsList.setAttribute("id", "add-autocomplete-list");
+    nameInput.parentNode.appendChild(itemsList);
+
+    // Read all files from the directory
+    const PATH = remote.app.store.get('networkPath');
+    const MAX_ITEMS = 10; // Limit display
+
+        // Get all files
+        fs.readdir(PATH, (err, files) => {
+
+            if (err) {
+                console.log("Error: Could not read files for autocompletion. ", err);
+                localLog("Error: Could not read files for autocompletion. ", err);
+                return;
+            }
+    
+            // Format and filter files
+            var items = getDocumentsPreview(files, nameInput.value)
+    
+            for (var i = 0; i < (MAX_ITEMS < items.length ? MAX_ITEMS : items.length); i++) {
+                var item = document.createElement("div");
+    
+                item.innerHTML = `<strong>${items[i][0]} (${items[i][1]})</strong>`;
+                item.innerHTML += `<input type='hidden' value='${items[i][0]}'>`;
+                item.innerHTML += `<input type='hidden' value='${items[i][1]}'>`;
+                item.addEventListener("click", function(e) {
+                    nameInput.value = this.getElementsByTagName('input')[0].value;
+                    document.getElementById('campaign-input').value = this.getElementsByTagName('input')[1].value
+                    closeAutocompleteList();
+                });
+    
+                itemsList.appendChild(item);
+            }
+        });
+
+}
+
+// Reinitialize autocomplete list for names
+function closeAutocompleteList(exception) {
+    var x = document.getElementsByClassName("autocomplete-items");
+    for (var i = 0; i < x.length; i++) {
+      if (exception != x[i]) x[i].parentNode.removeChild(x[i]);
     }
 }
 
-async function OnClick_Submit() {
+async function OnClick_Submit(original = false) {
 
     // Close alert box
     onClick_AlertBoxClose();
@@ -305,20 +478,23 @@ async function OnClick_Submit() {
     var loader = document.getElementById('loader-form');
     loader.style.display = "block";
 
-    // Verify if info is valid
+    // Extract necessary data and verify it
     const data = {
-        language: document.getElementById('language-input').value,
-        campaign: document.getElementById('campaign-input').value,
-        equipment: document.getElementById('equipment-input').value,
-        selectedEquipment: document.getElementsByName('selected-equipment'),
-        date: document.getElementById('date-input').value,
-        given: document.getElementById('given-input').value,
-        clientName: document.getElementById('client-name-input').value,
-        signatureType: document.getElementById('signature-type-input').value,
-        clientEmail: document.getElementById('client-input').value,
-        signatureCanvas: document.getElementById('signature-canvas'),
-        description: document.getElementById('additional-info').value
-    }
+            language: document.getElementById('language-input').value,
+            campaign: document.getElementById('campaign-input').value.replace("-", " "),
+            equipment: document.getElementById('equipment-input').value,
+            selectedEquipment: Array.from(document.getElementsByName('selected-equipment')).map(select => ({ checked: select.checked, value: select.value, id: select.id })),
+            date: document.getElementById('date-input').value,
+            given: document.getElementById('given-input').value,
+            clientName: document.getElementById('client-name-input').value.replace("-", " "),
+            signatureType: document.getElementById('signature-type-input').value,
+            clientEmail: document.getElementById('client-input').value,
+            signatureCanvas: signaturePad.toData(),
+            description: document.getElementById('additional-info').value,
+            pcName: document.getElementById('pc-number').value,
+            lpName: document.getElementById('laptop-number').value,
+            accessName: document.getElementById('card-number').value
+        }
 
     // Verify campaign
     if (data.campaign.replace(" ", "") == "") {
@@ -368,9 +544,36 @@ async function OnClick_Submit() {
         return;
     }
 
+    // Check for computer names if necessary
+    var laptopChecked = document.getElementById('checkbox-laptop').checked
+    if (laptopChecked && data.lpName.length < 5) {
+        showAlert("The laptop's name must be specified.")
+        submit.disabled = false;
+        loader.style.display = "none";
+        return;
+    }
+    var pcChecked = document.getElementById('checkbox-pc').checked
+    if (pcChecked && data.pcName.length < 5) {
+        showAlert("The pc's name must be specified.")
+        submit.disabled = false;
+        loader.style.display = "none";
+        return;
+    }
+
+    // Check for access card if necessary
+    var cardChecked = document.getElementById('checkbox-accesscard').checked
+    if (cardChecked && data.accessName.length < 4) {
+        showAlert("The access card's code must be specified.")
+        submit.disabled = false;
+        loader.style.display = "none";
+        return;
+    }
+
+
     // Save PDF
+    var constructed = "";
     try {
-        var constructed = await constructPDF(data);
+        constructed = await constructPDF(data, original.orignalFile != undefined ? true : false);
         if (!constructed) {
             showAlert("Could not open or save the PDF.");
             submit.disabled = false;
@@ -382,7 +585,18 @@ async function OnClick_Submit() {
         showAlert("Could not open or save the PDF.");
         submit.disabled = false;
         loader.style.display = "none";
+        localLog("(Failure to create PDF) " + ex);
         return;
+    }
+
+    // Erase the old modified file if necessary
+    if (original.orignalFile != undefined && original.orignalFile != constructed && fs.existsSync(remote.app.store.get('networkPath') + original.orignalFile)) {
+        try {
+            fs.unlinkSync(remote.app.store.get('networkPath') + original.orignalFile);
+        } catch (ex) {
+            console.log(ex);
+            localLog("(Could not remove the old file) " + ex);
+        }
     }
 
     // Send email notification
@@ -392,28 +606,95 @@ async function OnClick_Submit() {
         var equipmentValues = []
         for (var equip of data.selectedEquipment) {
             if (equip.checked) {
-                equipmentValues.push(equip.value.replace("_", " "));
+
+                    //equip.value = equip.value.replace("_", " ");
+
+                    // Added equipement modification
+                    if (original && !original.selectedEquipment.some(e => e.checked && e.value === equip.value)) {
+                        console.log("new " + equip.value)
+                        switch(equip.value) {
+                            case "PC":
+                                equipmentValues.push(`<span title="Added" style="background: green; mso-highlight: green; color: white;">(+) ${equip.value} (${remote.app.store.get("cityCode")}-${data.pcName})</span>`);
+                                break;
+                            case "Laptop":
+                                equipmentValues.push(`<span style="background: green; mso-highlight: green; color: white;">(+) ${equip.value} (${remote.app.store.get("cityCode")}-LP-${data.lpName})</span>`);
+                                break;
+                            case "Access Card":
+                                equipmentValues.push(`<span style="background: green; mso-highlight: green; color: white;">(+) ${equip.value} (${data.accessName})</span>`);
+                                break;
+                            default:
+                                equipmentValues.push(`<span style="background: green; mso-highlight: green; color: white;">(+) ${equip.value.replace("_", " ")}</span>`);
+                                break;
+                        }
+                    } else {
+
+                        // Specification (ID and #) modification
+                        switch(equip.value) {
+                            case "Laptop":
+                                if (original && data.lpName !== original.lpName) {
+                                    equipmentValues.push(`<span style="background: yellow; mso-highlight: yellow;">(!) ${equip.value} (${remote.app.store.get("cityCode")}-LP-${data.lpName})</span>`);
+                                } else {
+                                    equipmentValues.push(`${equip.value} (${remote.app.store.get("cityCode")}-LP-${data.lpName})`); // No mod
+                                }
+                                break;
+                            case "PC":
+                                if (original && data.pcName !== original.pcName) {
+                                    equipmentValues.push(`<span style="background: yellow; mso-highlight: yellow;">(!) ${equip.value} (${remote.app.store.get("cityCode")}-${data.pcName})</span>`);
+                                } else {
+                                    equipmentValues.push(`${equip.value} (${remote.app.store.get("cityCode")}-${data.pcName})`); // No mod
+                                }
+                                break;
+                            case "Access Card":
+                                if (original && data.accessName !== original.accessName) {
+                                    equipmentValues.push(`<span style="background: yellow; mso-highlight: yellow;">(!) ${equip.value} (${data.accessName})</span>`);
+                                } else {
+                                    equipmentValues.push(`${equip.value} (${data.accessName})`); // No mod
+                                }
+                                break;
+                            default:
+                                equipmentValues.push(`${equip.value.replace("_", " ")}`); // No mod
+                        }
+                        
+                    }
+                
             }
         }
-        // If no equipment, give default value
-        if (equipmentValues.length == 0) {
-            equipmentValues.push("None");
+
+        //Check for removal modifications
+        if (original) {
+            for (var equip of original.selectedEquipment) {
+                if (equip.checked) {
+                    if (!data.selectedEquipment.some(e => e.checked && e.value === equip.value)) equipmentValues.push(`<span style="color: white; background: red; mso-highlight: red;">(-) ${equip.value.replace("_", " ")}</span>`);
+                }
+            }
         }
+
+        // If no equipment, give default value
+        if (equipmentValues.length == 0) equipmentValues.push("None");
 
         // Prepare and send email
         try {
+            // Format additional info message
+            var descriptionLines = data.description.split("\n");
+            descriptionLines.forEach(function(part, index) {
+                descriptionLines[index] = "<p>" + descriptionLines[index] + "</p>";
+            });
+
             var emailMsg = await sendEmail(remote.app.store.get("emailDestination"), {
-                subject: `${data.equipment} equipment for/from ${data.clientName}`,
+                subject: `${original.orignalFile != undefined ? "(UPDATED) " : ""}${data.equipment} equipment for/from ${data.clientName}`,
                 html: `<b>${data.clientName} from ${data.campaign} came today ${data.equipment == "New" ? "to retrieve new equipment from" : ""}
                        ${data.equipment == "Return" ? "to return equipment to" : ""}${data.equipment == "Replacement" ? "to replace equipment with" : ""} 
-                       the GEXEL IT team. The exchange was handled by ${data.given}.</b>
+                       the GEXEL IT team. The exchange was handled by ${data.given}.${original.orignalFile != undefined ? " Note: The original form document was modified (" + original.orignalFile + ")" : ""}</b>
                        <p><u>The following equipment was exchanged:</u><p>
                        <p>${equipmentValues.join(', ')}</p>
-                       ${data.description != "" ? "<p><u>Additional info:</u></p>" + "<p>" + data.description + "</p>" : ""}`
+                       ${data.description != "" ? "<p><u>Additional info:</u></p>" + descriptionLines.join("") : ""}`
             })
         } catch (ex) {
             console.log(ex);
-            showAlert("The email could not be sent, but the pdf was saved. Try disabling the email setting for now.")
+            showAlert("The email could not be sent, but the pdf was saved. Try disabling the email setting for now.");
+            submit.disabled = false;
+            loader.style.display = "none";
+            localLog("(Mailing) " + ex);
         }
     }
 
@@ -425,7 +706,7 @@ async function OnClick_Submit() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 auth: remote.app.store.get("apiAuth"),
-                file: `Pending_${data.clientName}-${data.campaign}-${data.date}.pdf`,
+                file: constructed, // Name of the generated file from above
                 client: data.clientName
             })
         });
@@ -450,29 +731,32 @@ async function OnClick_Submit() {
         try {
             var emailMsg = await sendEmail(data.clientEmail, {
                 subject: `${data.equipment} equipment for/from ${data.clientName}`,
+                attachments: [{ filename: constructed, path: remote.app.store.get('networkPath') + constructed }],
                 html: `
+                    <h2>1. ${data.language == "english" ? "Rationale" : "Raisonnement"}</h2>
                     ${contract[0]}
+                    <h2>2. ${data.language == "english" ? "Significance" : "Conséquences"}</h2>
                     ${contract[1]}
-                    <a href="${remote.app.store.get("apiUrl")}/sign/${responseSignature.id}/">Click here to sign the contract.</a>
+                    <p><a style="font-size: 20px;" href="${remote.app.store.get("apiUrl")}/sign/${responseSignature.id}/">Click here to sign the contract.</a></p>
+                    <p style="color: grey;">In case of a problem, please contact IT support.</p>
+                    <p style="color: grey;">Do not reply to this email.</p>
                 `
             })
         } catch (ex) {
             showAlert("The email to the client could not be sent. " + ex);
+            submit.disabled = false;
+            loader.style.display = "none";
+            console.log(ex);
+            localLog(ex);
         }
     }
 
     // Reset form values
     submit.disabled = false;
     loader.style.display = "none";
-    document.getElementById('campaign-input').value = ""
-    document.getElementById('date-input').value = "";
-    document.getElementById('client-name-input').value = "";
-    document.getElementById('client-input').value = "";
-    document.getElementById('additional-info').value = "";
-    for (var selected of document.getElementsByName('selected-equipment')) {
-        selected.checked = false;
-    }
-    signaturePad.clear();
+    clearFormInputs();
+    document.getElementById('submit-btn').style.display = 'block';
+    document.getElementById('modify-panel').style.display = 'none';
 
     // Show success page
     onClick_OpenTab('add-success');
@@ -499,236 +783,43 @@ function onChange_SignatureTypeInput() {
     var inputBox = document.getElementById('signature-type-input');
     var canvas = document.getElementById('signature-canvas');
     var emailInput = document.getElementById('client-email');
+    var canvasBtn = document.getElementById('clear-canvas-btn');
 
     // Disable canvas
     canvas.className = canvas.className.replace(" visible", "");
     emailInput.className = emailInput.className.replace(" visible", "");
+    canvasBtn.style.display = "none";
 
     if (inputBox.value == "here") {
         // Enable canvas
         canvas.className += " visible";
+        canvasBtn.style.display = "block";
         resizeSignaturePad();
     } else if (inputBox.value == "send") {
         emailInput.className += " visible";
     }
 }
 
-function setupSignaturePad() {
-    var canvas = document.getElementById('signature-canvas');
-    signaturePad = new SignaturePad(canvas);
-    resizeSignaturePad();
-}
-
-function resizeSignaturePad() {
-    var canvas = document.getElementById('signature-canvas');
-    var ratio =  Math.max(window.devicePixelRatio || 1, 1);
-    canvas.width = canvas.offsetWidth * ratio;
-    canvas.height = canvas.offsetHeight * ratio;
-    canvas.getContext("2d").scale(ratio, ratio);
-    signaturePad.clear(); // otherwise isEmpty() might return incorrect value
-}
-
-async function getJSON(path) {
-    return new Promise((resolve, reject) => {
-        fs.readFile(path, 'utf8', (err, data) => {
-            if (err) {
-              console.error(err);
-              showAlert(`Could not read file at ${path}`);
-              reject({});
-            }
-
-            try {
-                var parsed = JSON.parse(data);
-                resolve(parsed);
-            } catch (ex) {
-                showAlert(`Could not parse the JSON file at ${path}`);
-                reject({});
-            }
-        });
-    });
-}
-
-async function sendEmail(to, msg) {
-
-    return new Promise((resolve, reject) => {
-
-
-        var transporter = nodemailer.createTransport({
-            service: "Outlook365",
-            auth: {
-              user: remote.app.store.get("email"),
-              pass: remote.app.store.get("password")
-            }
-        });
-    
-        var mailOptions = {
-            from: remote.app.store.get("email"),
-            to: to,
-            subject: msg.subject,
-            text: msg.text,
-            html: msg.html,
-            attachments: msg.attachments
-        };
-    
-        transporter.sendMail(mailOptions, function(error, info){
-            if (error) {
-                console.log(error);
-                reject(false);
-            } else {
-                console.log(info)
-                resolve(info);
-            }
-          });
-    });
-}
-
-function getSignatureImg() {
-    const base64 = signaturePad.toDataURL('image/png').replace("data:image/png;base64,", "");
-    const buffer = Buffer.from(base64, "base64");
-    return buffer;
-}
-
-async function constructPDF(data) {
-    // Load appropriate etemplate PDF
-    const template = fs.readFileSync(remote.app.store.get(data.language == "english" ? "enPdfTemplate" : "frPdfTemplate"));
-    const pdfDoc = await PDFDocument.load(template);
-
-    // Get first page
-    const pages = pdfDoc.getPages();
-    const page = pages[0];
-
-    // Get page size
-    const { width, height } = page.getSize();
-    
-    const form = pdfDoc.getForm();
-
-    // Equipment & Campaign
-    const equipment = form.createDropdown('gexel.equipment');
-
-    equipment.addOptions(['New', 'Return', 'Replacement']);
-    equipment.select(data.equipment);
-
-    equipment.addToPage(page, {  x: 40, y: height - 35, height: 20, width: 60 });
-    
-    page.drawText(" equipment for/from " + data.campaign, { x: 105, y: height - 30, size: 15});
-
-    // Date & Name
-    page.drawText(`Signed on the ${data.date} by ${data.clientName}.`, { x: 40, y: 90, size: 15});
-
-    // Given by
-    page.drawText(`Given by ${data.given}.`, { x: 40, y: 60, size: 15});
-
-    // Equipment
-    for (var i = 0; i < data.selectedEquipment.length; i++) {
-        var selected = data.selectedEquipment[i];
-        const field = form.createCheckBox("gexel.equipment" + selected.value.toLowerCase());
-        field.addToPage(page, { x: 140, y: 480 - i*26.8, width: 15, height: 15});
-        if (selected.checked) { field.check(); } // Set state
+// Make all inputs on the form page empty
+function clearFormInputs() {
+    document.getElementById('campaign-input').value = ""
+    document.getElementById('date-input').value = "";
+    document.getElementById('client-name-input').value = "";
+    document.getElementById('client-input').value = "";
+    document.getElementById('additional-info').value = "";
+    document.getElementById('card-number').value = "";
+    document.getElementById('pc-number').value = "";
+    document.getElementById('laptop-number').value = "";
+    for (var selected of document.getElementsByName('selected-equipment')) {
+        selected.checked = false;
     }
-
-    // Signature
-    if (data.signatureType == "here") {
-        await signDocument(pdfDoc, getSignatureImg());
-    }
-
-    // Description
-    if (data.description != "") {
-        const descriptionPage = pdfDoc.addPage([width, height]);
-        const description = form.createTextField('gexel.description');
-        description.enableMultiline();
-        description.setText(data.description);
-        description.addToPage(descriptionPage, {x: width / 2 - 200, y: height - 250, width: 400, height: 200 });
-    }
-
-    const pdfBytes = await pdfDoc.save();
-
-    // Save file
-    if (data.signatureType == "here" || data.signatureType == "none") {
-        try {
-            fs.writeFileSync(`${remote.app.store.get('networkPath')}Complete_${data.clientName}-${data.campaign}-${data.date}.pdf`, pdfBytes);
-            return true;
-        } catch (ex) {
-            console.log(ex);
-            showAlert("Could not save the PDF.");
-            return false;
-        }
-        
-    } else {
-        try {
-            fs.writeFileSync(`${remote.app.store.get('networkPath')}Pending_${data.clientName}-${data.campaign}-${data.date}.pdf`, pdfBytes);
-            return true;
-        } catch (ex) {
-            console.log(ex);
-            showAlert("Could not save the PDF.");
-            return false;
-        }
-    }
+    signaturePad.clear();
 }
 
-async function signDocument(file, img) {
-    if (typeof file === 'string') {
-        // Sign already created doucment
-        const oldPdfDocBytes = fs.readFileSync(file);
-        const pdfDoc = await PDFDocument.load(oldPdfDocBytes);
-        const page = pdfDoc.getPages()[0];
-
-        // Signature label
-        page.drawText("Signature:", { x: 450, y: 70, size: 12});
-
-        // Build rectangle
-        page.drawRectangle({
-            x: 450,
-            y: 10,
-            width: 150,
-            height: 50,
-            borderWidth: 3,
-            color: rgb(1, 1, 1),
-            borderColor: rgb(0, 0, 0)
-        });
-
-        // Add image
-        const pngImage = await pdfDoc.embedPng(img);
-        page.drawImage(pngImage, {
-            x: 450,
-            y: 10,
-            width: 150,
-            height: 50
-        });
-
-        // Save document
-        const pdfBytes = await pdfDoc.save();
-        // console.log("Saving " + file.replace("Pending_", "Complete_"))
-        fs.writeFileSync(file.replace("Pending_", "Complete_"), pdfBytes);
-        // Delete old document
-        fs.unlinkSync(file);
-
-    } else {
-        // Sign document being created
-        const page = file.getPages()[0];
-
-        // Signature label
-        page.drawText("Signature:", { x: 450, y: 70, size: 12});
-
-        // Build rectangle
-        page.drawRectangle({
-            x: 450,
-            y: 10,
-            width: 150,
-            height: 50,
-            borderWidth: 3,
-            color: rgb(1, 1, 1),
-            borderColor: rgb(0, 0, 0)
-        });
-
-        // Add image
-        const pngImage = await file.embedPng(img);
-        page.drawImage(pngImage, {
-            x: 450,
-            y: 10,
-            width: 150,
-            height: 50
-        });
-    }
+function onClick_ExitModifyMenu() {
+    document.getElementById('submit-btn').style.display = 'block';
+    document.getElementById('modify-panel').style.display = 'none';
+    clearFormInputs();
 }
 
 /*
@@ -737,8 +828,10 @@ async function signDocument(file, img) {
 
 function setupSettings() {
     document.getElementById('enable-notification-settings').checked = remote.app.store.get("enableNotification");
+    document.getElementById('enable-autocomplete-settings').checked = remote.app.store.get("enableAutocomplete");
     document.getElementById('notification-email-settings').value = remote.app.store.get("emailDestination");
     document.getElementById('network-path-settings').value = remote.app.store.get("networkPath");
+
 }
 
 function onClick_EmailNotificationSettings() {
@@ -746,12 +839,36 @@ function onClick_EmailNotificationSettings() {
     remote.app.store.set("enableNotification", checkbox.checked);
 }
 
+function onClick_SearchAutocompleteSettings() {
+    var checkbox = document.getElementById('enable-autocomplete-settings');
+    remote.app.store.set("enableAutocomplete", checkbox.checked);
+}
+
 function onKeyUp_NotificationEmailSettings() {
     var input = document.getElementById('notification-email-settings');
     remote.app.store.set("emailDestination", input.value);
 }
 
-function onKeyUp_NetworkPathSettings() {
+async function onClick_NetworkPathSettings() {
+    if (isDialogOpen) return; // Check to see if window is already open
     var input = document.getElementById('network-path-settings');
-    remote.app.store.set("networkPath", input.value.replace("/", "\\"));
+    isDialogOpen = true;
+
+    var selected = await remote.dialog.showOpenDialog({
+        properties: ['openDirectory']
+    });
+    isDialogOpen = false;
+
+    // Check if a folder was selected
+    if (selected.filePaths.length > 0) {
+        var folderPath = selected.filePaths[0] + "\\";
+
+        // Save new setting
+        remote.app.store.set("networkPath", folderPath);
+        input.value = folderPath;
+
+        // Reload files
+        listFiles(document.getElementById('searchInput').value);
+    }
+
 }
